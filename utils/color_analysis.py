@@ -13,19 +13,25 @@ class ColorAnalyzer:
     def __init__(self):
         self.classification_path = 'data/classification_data.csv'
         
-    def analyze_color_regions(self, file_path, threshold=45, top_n=10):
+    def analyze_color_regions(self, file_path, threshold=45, top_n=10, metric_column='combined_criteria_pct'):
         """Main analysis function that returns comprehensive results"""
         try:
-            # Load and process data
+            print(f"\n=== ANALYZING COLOR REGIONS ===")
+            print(f"File: {file_path}")
+            print(f"Threshold: {threshold}%")
+            print(f"Top N: {top_n}")
+            print(f"Metric column: {metric_column}")
+            
+            # Load and process data (using your original method)
             df = self._load_and_process_data(file_path)
             if df is None:
                 return None
             
-            # Calculate statistics
+            # Calculate statistics (using your original method)
             cluster_stats = self._calculate_cluster_statistics(df)
             
-            # Get top regions
-            top_regions = self._get_top_regions(cluster_stats, top_n)
+            # Get top regions (modified to accept metric_column)
+            top_regions = self._get_top_regions(cluster_stats, top_n, metric_column)
             
             # Calculate cluster centers for colors
             cluster_centers = self._calculate_cluster_centers(df)
@@ -39,6 +45,8 @@ class ColorAnalyzer:
             # Family composition
             family_data = self._calculate_family_composition(df, top_regions)
             
+            print(f"✅ Analysis complete: {len(top_regions)} top regions found")
+            
             return {
                 'original_data': df,
                 'cluster_stats': cluster_stats,
@@ -46,7 +54,8 @@ class ColorAnalyzer:
                 'cluster_centers': cluster_centers,
                 'exposure_data': exposure_data,
                 'family_data': family_data,
-                'threshold': threshold
+                'threshold': threshold,
+                'metric_column': metric_column
             }
             
         except Exception as e:
@@ -80,13 +89,13 @@ class ColorAnalyzer:
             return top_regions, cluster_centers
     
     def _load_and_process_data(self, file_path):
-        """Load and preprocess the main data file"""
+        """Load and preprocess the main data file (YOUR ORIGINAL METHOD)"""
         try:
-            # Load main data
+            # Load main data with semicolon separator
             df = pd.read_csv(file_path, sep=";")
             print(f"Data loaded successfully! Shape: {df.shape}")
             
-            # Check required columns
+            # Check required columns (your original requirements)
             required_columns = ['color_regions', 'S1R']
             missing_columns = [col for col in required_columns if col not in df.columns]
             if missing_columns:
@@ -120,7 +129,7 @@ class ColorAnalyzer:
             return None
     
     def _merge_classification_data(self, df, classification_df):
-        """Merge with classification data"""
+        """Merge with classification data (YOUR ORIGINAL METHOD)"""
         # Extract numeric values from XSHADE_S column
         if 'XSHADE_S' in df.columns:
             df['XSHADE_S_numeric'] = df['XSHADE_S'].apply(self._extract_numeric_from_xshade)
@@ -139,7 +148,7 @@ class ColorAnalyzer:
         return df
     
     def _extract_numeric_from_xshade(self, xshade_value):
-        """Extract numeric values from XSHADE_S column"""
+        """Extract numeric values from XSHADE_S column (YOUR ORIGINAL METHOD)"""
         if pd.isna(xshade_value):
             return np.nan
         match = re.match(r'^(\d+)', str(xshade_value).strip())
@@ -148,7 +157,7 @@ class ColorAnalyzer:
         return np.nan
     
     def _calculate_cluster_statistics(self, df):
-        """Calculate comprehensive statistics for each color region"""
+        """Calculate comprehensive statistics for each color region (YOUR ORIGINAL METHOD)"""
         def calculate_corrected_stats(group):
             total_samples = len(group['S1R'].dropna())
             
@@ -206,14 +215,23 @@ class ColorAnalyzer:
         cluster_stats = df.groupby('color_regions').apply(calculate_corrected_stats).reset_index()
         return cluster_stats
     
-    def _get_top_regions(self, cluster_stats, top_n):
-        """Get top N performing regions"""
+    def _get_top_regions(self, cluster_stats, top_n, metric_column='combined_criteria_pct'):
+        """Get top N performing regions (MODIFIED to support different metrics)"""
         clusters_with_data = cluster_stats[cluster_stats['total_samples'] > 0].copy()
-        top_regions = clusters_with_data.dropna(subset=['combined_criteria_pct']).nlargest(top_n, 'combined_criteria_pct')
+        
+        # Check if the requested metric column exists
+        if metric_column not in clusters_with_data.columns:
+            print(f"❌ Metric column '{metric_column}' not found!")
+            print(f"Available columns: {list(clusters_with_data.columns)}")
+            # Fall back to combined_criteria_pct
+            metric_column = 'combined_criteria_pct'
+            print(f"Falling back to: {metric_column}")
+        
+        top_regions = clusters_with_data.dropna(subset=[metric_column]).nlargest(top_n, metric_column)
         return top_regions
     
     def _calculate_cluster_centers(self, df):
-        """Calculate cluster centers for color visualization"""
+        """Calculate cluster centers for color visualization (YOUR ORIGINAL METHOD)"""
         color_columns = ['L_main', 'a_main', 'b_main', 'L_reflect', 'a_reflect', 'b_reflect']
         
         # Check which color columns exist
@@ -235,7 +253,7 @@ class ColorAnalyzer:
         return cluster_centers
     
     def _calculate_exposure_analysis(self, df):
-        """Calculate exposure analysis"""
+        """Calculate exposure analysis (YOUR ORIGINAL METHOD)"""
         exposure_data = {}
         
         if 'RESP_FINAL' in df.columns:
@@ -256,7 +274,7 @@ class ColorAnalyzer:
         return exposure_data
     
     def _calculate_family_composition(self, df, top_regions):
-        """Calculate family composition for top regions"""
+        """Calculate family composition for top regions (YOUR ORIGINAL METHOD)"""
         family_data = {}
         
         if 'Family_MCB' in df.columns and 'color_regions' in top_regions.columns:

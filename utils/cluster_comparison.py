@@ -16,7 +16,7 @@ class ClusterComparator:
     def __init__(self):
         self.delta_e_threshold = 3.0
     
-    def compare_two_clusters(self, cluster_results_1, cluster_results_2, cluster_id_1, cluster_id_2, delta_e_threshold=3.0, top_n=10):
+    def compare_two_clusters(self, cluster_results_1, cluster_results_2, cluster_id_1, cluster_id_2, delta_e_threshold=3.0, top_n=10, metric_column='combined_criteria_pct'):
         """
         Compare two specific clusters using DeltaE analysis
         """
@@ -25,6 +25,7 @@ class ClusterComparator:
         print(f"\n=== DEBUGGING CLUSTER COMPARISON ===")
         print(f"Comparing Cluster {cluster_id_1} vs Cluster {cluster_id_2}")
         print(f"DeltaE threshold: {delta_e_threshold}")
+        print(f"Metric column: {metric_column}")
         
         # Get data for both clusters
         try:
@@ -137,8 +138,8 @@ class ClusterComparator:
                     comparison_results.append({
                         f'region_{cluster_id_1}_id': int(region_1_id),
                         f'region_{cluster_id_2}_id': int(region_2_id),
-                        f'region_{cluster_id_1}_score': float(region_1['combined_criteria_pct']),
-                        f'region_{cluster_id_2}_score': float(region_2['combined_criteria_pct']),
+                        f'region_{cluster_id_1}_score': float(region_1[metric_column]),
+                        f'region_{cluster_id_2}_score': float(region_2[metric_column]),
                         f'region_{cluster_id_1}_samples': int(region_1['total_samples']),
                         f'region_{cluster_id_2}_samples': int(region_2['total_samples']),
                         'delta_e_main': float(delta_e_main),
@@ -187,7 +188,8 @@ class ClusterComparator:
             'delta_e_threshold': delta_e_threshold,
             'total_comparisons': len(comparison_df),
             'similar_count': len(similar_pairs),
-            'similarity_rate': (len(similar_pairs) / len(comparison_df) * 100) if len(comparison_df) > 0 else 0
+            'similarity_rate': (len(similar_pairs) / len(comparison_df) * 100) if len(comparison_df) > 0 else 0,
+            'metric_column': metric_column
         }
     
     def _calculate_delta_e_custom(self, lab1, lab2):
@@ -577,6 +579,7 @@ class ClusterComparator:
         """Create Excel data for comparison analysis"""
         comparison_df = comparison_results['comparison_df']
         similar_pairs = comparison_results['similar_pairs']
+        metric_column = comparison_results.get('metric_column', 'combined_criteria_pct')
         
         # Main comparison data
         excel_data = []
@@ -584,8 +587,8 @@ class ClusterComparator:
             excel_data.append({
                 f'Skin_Tone_{cluster_id_1}_Region': int(row[f'region_{cluster_id_1}_id']),
                 f'Skin_Tone_{cluster_id_2}_Region': int(row[f'region_{cluster_id_2}_id']),
-                f'ST{cluster_id_1}_Combined_Score': row[f'region_{cluster_id_1}_score'],
-                f'ST{cluster_id_2}_Combined_Score': row[f'region_{cluster_id_2}_score'],
+                f'ST{cluster_id_1}_Score': row[f'region_{cluster_id_1}_score'],
+                f'ST{cluster_id_2}_Score': row[f'region_{cluster_id_2}_score'],
                 f'ST{cluster_id_1}_Samples': int(row[f'region_{cluster_id_1}_samples']),
                 f'ST{cluster_id_2}_Samples': int(row[f'region_{cluster_id_2}_samples']),
                 'DeltaE_Main_Colors': row['delta_e_main'],
@@ -627,6 +630,7 @@ class ClusterComparator:
         # Summary data
         summary_data = {
             'Metric': [
+                'Metric Column Used',
                 'DeltaE Threshold Used',
                 'Total Comparisons Made',
                 'Similar Main Color Pairs Found',
@@ -639,6 +643,7 @@ class ClusterComparator:
                 'Analysis Date'
             ],
             'Value': [
+                metric_column,
                 comparison_results['delta_e_threshold'],
                 comparison_results['total_comparisons'],
                 comparison_results['similar_count'],
@@ -655,5 +660,796 @@ class ClusterComparator:
         return {
             'all_comparisons': pd.DataFrame(excel_data),
             'similar_pairs': pd.DataFrame(similar_excel_data) if similar_excel_data else pd.DataFrame(),
+            'summary': pd.DataFrame(summary_data)
+        }
+
+    def create_similar_pairs_recap(self, comparison_results, cluster_id_1, cluster_id_2):
+        """
+        Create a recap of similar pairs, grouping regions that match with multiple regions
+        and calculating centroids for grouped pairs
+        """
+        similar_pairs = comparison_results['similar_pairs']
+        
+        if len(similar_pairs) == 0:
+            return {
+                'grouped_pairs': pd.DataFrame(),
+                'centroid_data': pd.DataFrame(),
+                'summary_stats': {}
+            }
+        
+        print(f"\n=== CREATING SIMILAR PAIRS RECAP ===")
+        print(f"Processing {len(similar_pairs)} similar pairs...")
+        
+        # Group by cluster 1 regions that have multiple matches
+        cluster_1_groups = self._group_regions_by_matches(similar_pairs, cluster_id_1, cluster_id_2, 'cluster_1')
+        
+        # Group by cluster 2 regions that have multiple matches  
+        cluster_2_groups = self._group_regions_by_matches(similar_pairs, cluster_id_2, cluster_id_1, 'cluster_2')
+        
+        # Combine all groups
+        all_groups = cluster_1_groups + cluster_2_groups
+        
+        # Create grouped pairs dataframe
+        grouped_pairs_data = []
+        centroid_data = []
+        
+        for group in all_groups:
+            group_info = self._process_group_for_recap(group, cluster_id_1, cluster_id_2, similar_pairs)
+            if group_info:
+                grouped_pairs_data.append(group_info['group_data'])
+                centroid_data.append(group_info['centroid_data'])
+        
+        # Create summary statistics
+        summary_stats = self._calculate_recap_summary(all_groups, similar_pairs, cluster_id_1, cluster_id_2)
+        
+        return {
+            'grouped_pairs': pd.DataFrame(grouped_pairs_data) if grouped_pairs_data else pd.DataFrame(),
+            'centroid_data': pd.DataFrame(centroid_data) if centroid_data else pd.DataFrame(),
+            'summary_stats': summary_stats,
+            'individual_groups': all_groups
+        }
+
+    def _group_regions_by_matches(self, similar_pairs, primary_cluster, secondary_cluster, group_type):
+        """Group regions that have multiple matches"""
+        groups = []
+        
+        # Count matches for each region in primary cluster
+        primary_col = f'region_{primary_cluster}_id'
+        region_matches = similar_pairs.groupby(primary_col).agg({
+            f'region_{secondary_cluster}_id': list,
+            'delta_e_main': list,
+            'delta_e_reflect': list
+        }).reset_index()
+        
+        # Filter regions with 2+ matches
+        multi_match_regions = region_matches[region_matches[f'region_{secondary_cluster}_id'].apply(len) >= 2]
+        
+        for _, region_data in multi_match_regions.iterrows():
+            primary_region = region_data[primary_col]
+            matched_regions = region_data[f'region_{secondary_cluster}_id']
+            delta_e_main_list = region_data['delta_e_main']
+            delta_e_reflect_list = region_data['delta_e_reflect']
+            
+            # Create group name
+            if group_type == 'cluster_1':
+                group_name = f"ST{primary_cluster}R{primary_region} + " + " + ".join([f"ST{secondary_cluster}R{r}" for r in matched_regions])
+            else:
+                group_name = f"ST{primary_cluster}R{primary_region} + " + " + ".join([f"ST{secondary_cluster}R{r}" for r in matched_regions])
+            
+            groups.append({
+                'group_name': group_name,
+                'primary_cluster': primary_cluster,
+                'primary_region': primary_region,
+                'secondary_cluster': secondary_cluster,
+                'matched_regions': matched_regions,
+                'group_type': group_type,
+                'match_count': len(matched_regions),
+                'avg_delta_e_main': np.mean(delta_e_main_list),
+                'avg_delta_e_reflect': np.mean(delta_e_reflect_list),
+                'min_delta_e_main': np.min(delta_e_main_list),
+                'max_delta_e_main': np.max(delta_e_main_list)
+            })
+        
+        return groups
+
+    def _process_group_for_recap(self, group, cluster_id_1, cluster_id_2, similar_pairs):
+        """Process a group to calculate centroids and create display data"""
+        try:
+            primary_cluster = group['primary_cluster']
+            primary_region = group['primary_region']
+            secondary_cluster = group['secondary_cluster']
+            matched_regions = group['matched_regions']
+            
+            # Get all pairs for this group
+            group_pairs = similar_pairs[
+                (similar_pairs[f'region_{primary_cluster}_id'] == primary_region) &
+                (similar_pairs[f'region_{secondary_cluster}_id'].isin(matched_regions))
+            ]
+            
+            if len(group_pairs) == 0:
+                return None
+            
+            # Calculate centroids for main colors
+            main_centroid_primary = self._calculate_color_centroid(group_pairs, primary_cluster, 'main')
+            main_centroid_secondary = self._calculate_color_centroid(group_pairs, secondary_cluster, 'main')
+            
+            # Calculate centroids for reflect colors
+            reflect_centroid_primary = self._calculate_color_centroid(group_pairs, primary_cluster, 'reflect')
+            reflect_centroid_secondary = self._calculate_color_centroid(group_pairs, secondary_cluster, 'reflect')
+            
+            # Calculate centroid of centroids (overall group centroid)
+            overall_main_centroid = {
+                'L': (main_centroid_primary['L'] + main_centroid_secondary['L']) / 2,
+                'a': (main_centroid_primary['a'] + main_centroid_secondary['a']) / 2,
+                'b': (main_centroid_primary['b'] + main_centroid_secondary['b']) / 2
+            }
+            
+            overall_reflect_centroid = {
+                'L': (reflect_centroid_primary['L'] + reflect_centroid_secondary['L']) / 2,
+                'a': (reflect_centroid_primary['a'] + reflect_centroid_secondary['a']) / 2,
+                'b': (reflect_centroid_primary['b'] + reflect_centroid_secondary['b']) / 2
+            }
+            
+            # Calculate average performance scores
+            avg_score_primary = group_pairs[f'region_{primary_cluster}_score'].mean()
+            avg_score_secondary = group_pairs[f'region_{secondary_cluster}_score'].mean()
+            
+            # Calculate total samples
+            total_samples_primary = group_pairs[f'region_{primary_cluster}_samples'].sum()
+            total_samples_secondary = group_pairs[f'region_{secondary_cluster}_samples'].sum()
+            
+            group_data = {
+                'group_name': group['group_name'],
+                'primary_cluster': primary_cluster,
+                'primary_region': primary_region,
+                'secondary_cluster': secondary_cluster,
+                'matched_regions_count': len(matched_regions),
+                'matched_regions_list': ", ".join([str(r) for r in matched_regions]),
+                'avg_delta_e_main': group['avg_delta_e_main'],
+                'avg_delta_e_reflect': group['avg_delta_e_reflect'],
+                'min_delta_e_main': group['min_delta_e_main'],
+                'max_delta_e_main': group['max_delta_e_main'],
+                'avg_score_primary': avg_score_primary,
+                'avg_score_secondary': avg_score_secondary,
+                'total_samples_primary': total_samples_primary,
+                'total_samples_secondary': total_samples_secondary,
+                'overall_avg_score': (avg_score_primary + avg_score_secondary) / 2
+            }
+            
+            centroid_data = {
+                'group_name': group['group_name'],
+                'overall_main_L': overall_main_centroid['L'],
+                'overall_main_a': overall_main_centroid['a'],
+                'overall_main_b': overall_main_centroid['b'],
+                'overall_reflect_L': overall_reflect_centroid['L'],
+                'overall_reflect_a': overall_reflect_centroid['a'],
+                'overall_reflect_b': overall_reflect_centroid['b'],
+                f'primary_main_L': main_centroid_primary['L'],
+                f'primary_main_a': main_centroid_primary['a'],
+                f'primary_main_b': main_centroid_primary['b'],
+                f'primary_reflect_L': reflect_centroid_primary['L'],
+                f'primary_reflect_a': reflect_centroid_primary['a'],
+                f'primary_reflect_b': reflect_centroid_primary['b'],
+                f'secondary_main_L': main_centroid_secondary['L'],
+                f'secondary_main_a': main_centroid_secondary['a'],
+                f'secondary_main_b': main_centroid_secondary['b'],
+                f'secondary_reflect_L': reflect_centroid_secondary['L'],
+                f'secondary_reflect_a': reflect_centroid_secondary['a'],
+                f'secondary_reflect_b': reflect_centroid_secondary['b']
+            }
+            
+            return {
+                'group_data': group_data,
+                'centroid_data': centroid_data
+            }
+            
+        except Exception as e:
+            print(f"Error processing group {group.get('group_name', 'Unknown')}: {e}")
+            return None
+
+    def _calculate_color_centroid(self, group_pairs, cluster_id, color_type):
+        """Calculate centroid of colors for a specific cluster and color type"""
+        L_col = f'L_{color_type}_{cluster_id}'
+        a_col = f'a_{color_type}_{cluster_id}'
+        b_col = f'b_{color_type}_{cluster_id}'
+        
+        return {
+            'L': group_pairs[L_col].mean(),
+            'a': group_pairs[a_col].mean(),
+            'b': group_pairs[b_col].mean()
+        }
+
+    def _calculate_recap_summary(self, all_groups, similar_pairs, cluster_id_1, cluster_id_2):
+        """Calculate summary statistics for the recap"""
+        total_groups = len(all_groups)
+        total_similar_pairs = len(similar_pairs)
+        
+        # Count how many regions have multiple matches
+        cluster_1_multi_match = len([g for g in all_groups if g['group_type'] == 'cluster_1'])
+        cluster_2_multi_match = len([g for g in all_groups if g['group_type'] == 'cluster_2'])
+        
+        # Calculate average matches per multi-match region
+        avg_matches_per_group = np.mean([g['match_count'] for g in all_groups]) if all_groups else 0
+        
+        # Find the group with most matches
+        max_matches_group = max(all_groups, key=lambda x: x['match_count']) if all_groups else None
+        
+        return {
+            'total_groups': total_groups,
+            'total_similar_pairs': total_similar_pairs,
+            'cluster_1_multi_match_regions': cluster_1_multi_match,
+            'cluster_2_multi_match_regions': cluster_2_multi_match,
+            'avg_matches_per_group': avg_matches_per_group,
+            'max_matches_group': max_matches_group,
+            'multi_match_rate_cluster_1': (cluster_1_multi_match / len(similar_pairs[f'region_{cluster_id_1}_id'].unique())) * 100 if len(similar_pairs) > 0 else 0,
+            'multi_match_rate_cluster_2': (cluster_2_multi_match / len(similar_pairs[f'region_{cluster_id_2}_id'].unique())) * 100 if len(similar_pairs) > 0 else 0
+        }
+
+    def create_recap_visualization(self, recap_results, cluster_id_1, cluster_id_2):
+        """Create visualization for the recap"""
+        grouped_pairs = recap_results['grouped_pairs']
+        centroid_data = recap_results['centroid_data']
+        
+        if len(grouped_pairs) == 0:
+            return None, None
+        
+        # Create grouped pairs visualization
+        fig_groups = self._create_grouped_pairs_chart(grouped_pairs, cluster_id_1, cluster_id_2)
+        
+        # Create centroid color swatches
+        fig_centroids = self._create_centroid_swatches(centroid_data)
+        
+        return fig_groups, fig_centroids
+
+    def _create_grouped_pairs_chart(self, grouped_pairs, cluster_id_1, cluster_id_2):
+        """Create chart showing grouped pairs performance"""
+        fig = go.Figure()
+        
+        # Add bars for average performance
+        fig.add_trace(go.Bar(
+            x=grouped_pairs['group_name'],
+            y=grouped_pairs['overall_avg_score'],
+            text=[f"{x:.1f}%" for x in grouped_pairs['overall_avg_score']],
+            textposition='outside',
+            marker_color='#4A74F3',
+            name='Overall Average Score',
+            hovertemplate="<b>%{x}</b><br>" +
+                        "Average Performance: %{y:.1f}%<br>" +
+                        "Matches: %{customdata}<br>" +
+                        "<extra></extra>",
+            customdata=grouped_pairs['matched_regions_count']
+        ))
+        
+        fig.update_layout(
+            title=f'Multi-Match Region Groups Performance<br>ST{cluster_id_1} vs ST{cluster_id_2}',
+            xaxis_title='Region Groups',
+            yaxis_title='Average Performance Score (%)',
+            xaxis={'tickangle': 45},
+            height=500,
+            showlegend=False
+        )
+        
+        return fig
+
+    def _create_centroid_swatches(self, centroid_data):
+        """Create color swatches for centroids"""
+        if len(centroid_data) == 0:
+            return None
+        
+        n_groups = len(centroid_data)
+        fig, axes = plt.subplots(n_groups, 3, figsize=(12, n_groups * 2))
+        
+        if n_groups == 1:
+            axes = axes.reshape(1, -1)
+        
+        for i, (_, row) in enumerate(centroid_data.iterrows()):
+            try:
+                # Overall centroid - main
+                rgb_overall_main = self._lab_to_rgb(row['overall_main_L'], row['overall_main_a'], row['overall_main_b'])
+                axes[i, 0].add_patch(Rectangle((0, 0), 1, 1, color=rgb_overall_main))
+                axes[i, 0].set_title(f"Overall Main Centroid\nL={row['overall_main_L']:.1f}, a={row['overall_main_a']:.1f}, b={row['overall_main_b']:.1f}", fontsize=10)
+                axes[i, 0].axis('off')
+                
+                # Overall centroid - reflect
+                rgb_overall_reflect = self._lab_to_rgb(row['overall_reflect_L'], row['overall_reflect_a'], row['overall_reflect_b'])
+                axes[i, 1].add_patch(Rectangle((0, 0), 1, 1, color=rgb_overall_reflect))
+                axes[i, 1].set_title(f"Overall Reflect Centroid\nL={row['overall_reflect_L']:.1f}, a={row['overall_reflect_a']:.1f}, b={row['overall_reflect_b']:.1f}", fontsize=10)
+                axes[i, 1].axis('off')
+                
+                # Group name
+                axes[i, 2].text(0.5, 0.5, row['group_name'], ha='center', va='center', fontsize=10, fontweight='bold', wrap=True)
+                axes[i, 2].set_xlim(0, 1)
+                axes[i, 2].set_ylim(0, 1)
+                axes[i, 2].set_title("Group Name", fontsize=10)
+                axes[i, 2].axis('off')
+                
+            except Exception as e:
+                print(f"Error creating swatch for group {i}: {e}")
+        
+        plt.suptitle('Centroid Colors for Multi-Match Groups', fontsize=16, fontweight='bold')
+        plt.tight_layout()
+        
+        return fig
+
+    def create_recap_excel_data(self, recap_results, cluster_id_1, cluster_id_2):
+        """Create Excel data for recap analysis"""
+        grouped_pairs = recap_results['grouped_pairs']
+        centroid_data = recap_results['centroid_data']
+        summary_stats = recap_results['summary_stats']
+        
+        # Grouped pairs data
+        excel_grouped = grouped_pairs.copy() if len(grouped_pairs) > 0 else pd.DataFrame()
+        
+        # Centroid data
+        excel_centroids = centroid_data.copy() if len(centroid_data) > 0 else pd.DataFrame()
+        
+        # Summary data
+        summary_data = {
+            'Metric': [
+                'Total Multi-Match Groups',
+                f'ST{cluster_id_1} Multi-Match Regions',
+                f'ST{cluster_id_2} Multi-Match Regions',
+                f'ST{cluster_id_1} Multi-Match Rate (%)',
+                f'ST{cluster_id_2} Multi-Match Rate (%)',
+                'Average Matches per Group',
+                'Max Matches in Single Group',
+                'Best Performing Group',
+                'Analysis Date'
+            ],
+            'Value': [
+                summary_stats.get('total_groups', 0),
+                summary_stats.get('cluster_1_multi_match_regions', 0),
+                summary_stats.get('cluster_2_multi_match_regions', 0),
+                f"{summary_stats.get('multi_match_rate_cluster_1', 0):.1f}%",
+                f"{summary_stats.get('multi_match_rate_cluster_2', 0):.1f}%",
+                f"{summary_stats.get('avg_matches_per_group', 0):.1f}",
+                summary_stats.get('max_matches_group', {}).get('match_count', 'N/A') if summary_stats.get('max_matches_group') else 'N/A',
+                summary_stats.get('max_matches_group', {}).get('group_name', 'N/A') if summary_stats.get('max_matches_group') else 'N/A',
+                pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')
+            ]
+        }
+        
+        return {
+            'grouped_pairs': excel_grouped,
+            'centroid_data': excel_centroids,
+            'summary': pd.DataFrame(summary_data)
+        }
+    
+    def find_universal_regions(self, cluster_results, delta_e_threshold=4.0, min_clusters_required=3, min_performance_threshold=40.0, top_n=10, metric_column='combined_criteria_pct'):
+        """
+        Find color regions that appear across multiple clusters with similar colors
+        """
+        print(f"\n=== UNIVERSAL REGIONS ANALYSIS ===")
+        print(f"DeltaE threshold: {delta_e_threshold}")
+        print(f"Min clusters required: {min_clusters_required}")
+        print(f"Min performance threshold: {min_performance_threshold}%")
+        print(f"Top N regions per cluster: {top_n}")
+        print(f"Metric column: {metric_column}")
+        
+        # Prepare data from all clusters
+        cluster_data = {}
+        analyzed_clusters = []
+        
+        for cluster_id, results in cluster_results.items():
+            top_regions = results['top_regions'].head(top_n).copy()
+            centers = results['cluster_centers'].copy()
+            
+            # Filter by performance threshold
+            top_regions = top_regions[top_regions[metric_column] >= min_performance_threshold]
+            
+            if len(top_regions) == 0:
+                print(f"No regions meet performance threshold in cluster {cluster_id}")
+                continue
+            
+            # Fix data alignment
+            top_regions, centers = self._fix_data_alignment(top_regions, centers, cluster_id)
+            
+            if len(top_regions) > 0:
+                cluster_data[cluster_id] = {
+                    'top_regions': top_regions,
+                    'centers': centers
+                }
+                analyzed_clusters.append(cluster_id)
+        
+        if len(analyzed_clusters) < min_clusters_required:
+            raise ValueError(f"Only {len(analyzed_clusters)} clusters have sufficient data. Need at least {min_clusters_required}.")
+        
+        print(f"Analyzing {len(analyzed_clusters)} clusters: {analyzed_clusters}")
+        
+        # Find universal groups by comparing all regions across all clusters
+        universal_groups = self._find_universal_groups(
+            cluster_data, delta_e_threshold, min_clusters_required, analyzed_clusters, metric_column
+        )
+        
+        # Calculate centroids for universal groups
+        centroid_colors = self._calculate_universal_centroids(universal_groups, cluster_data)
+        
+        # Calculate performance summaries
+        performance_summary = self._calculate_universal_performance(universal_groups, cluster_data)
+        
+        # Create cluster coverage matrix
+        cluster_coverage = self._create_cluster_coverage_matrix(universal_groups, analyzed_clusters)
+        
+        return {
+            'universal_regions': universal_groups,
+            'centroid_colors': centroid_colors,
+            'performance_summary': performance_summary,
+            'cluster_coverage': cluster_coverage,
+            'analyzed_clusters': analyzed_clusters,
+            'parameters': {
+                'delta_e_threshold': delta_e_threshold,
+                'min_clusters_required': min_clusters_required,
+                'min_performance_threshold': min_performance_threshold,
+                'top_n': top_n,
+                'metric_column': metric_column
+            }
+        }
+
+    def _find_universal_groups(self, cluster_data, delta_e_threshold, min_clusters_required, analyzed_clusters, metric_column):
+        """Find groups of similar regions across clusters"""
+        print(f"\n=== FINDING UNIVERSAL GROUPS ===")
+        
+        # Create all possible region pairs across clusters
+        all_regions = []
+        for cluster_id, data in cluster_data.items():
+            for _, region in data['top_regions'].iterrows():
+                region_id = region['color_regions']
+                if region_id in data['centers'].index:
+                    center = data['centers'].loc[region_id]
+                    all_regions.append({
+                        'cluster_id': cluster_id,
+                        'region_id': region_id,
+                        'performance': region[metric_column],
+                        'samples': region['total_samples'],
+                        'L_main': center['L_main'],
+                        'a_main': center['a_main'],
+                        'b_main': center['b_main'],
+                        'L_reflect': center['L_reflect'],
+                        'a_reflect': center['a_reflect'],
+                        'b_reflect': center['b_reflect']
+                    })
+        
+        print(f"Total regions to analyze: {len(all_regions)}")
+        
+        # Find groups of similar regions
+        universal_groups = []
+        processed_regions = set()
+        
+        for i, region_1 in enumerate(all_regions):
+            if f"{region_1['cluster_id']}_{region_1['region_id']}" in processed_regions:
+                continue
+            
+            # Find all regions similar to this one
+            similar_group = [region_1]
+            group_clusters = {region_1['cluster_id']}
+            
+            for j, region_2 in enumerate(all_regions):
+                if i == j or region_2['cluster_id'] == region_1['cluster_id']:
+                    continue
+                
+                if f"{region_2['cluster_id']}_{region_2['region_id']}" in processed_regions:
+                    continue
+                
+                # Calculate DeltaE for main colors
+                delta_e_main = self._calculate_delta_e_cie2000_custom(
+                    [region_1['L_main'], region_1['a_main'], region_1['b_main']],
+                    [region_2['L_main'], region_2['a_main'], region_2['b_main']]
+                )
+                
+                if not pd.isna(delta_e_main) and delta_e_main < delta_e_threshold:
+                    similar_group.append(region_2)
+                    group_clusters.add(region_2['cluster_id'])
+            
+            # Check if this group meets minimum cluster requirements
+            if len(group_clusters) >= min_clusters_required:
+                # Mark all regions in this group as processed
+                for region in similar_group:
+                    processed_regions.add(f"{region['cluster_id']}_{region['region_id']}")
+                
+                # Calculate group statistics
+                group_delta_es = []
+                for k in range(len(similar_group)):
+                    for l in range(k+1, len(similar_group)):
+                        delta_e = self._calculate_delta_e_cie2000_custom(
+                            [similar_group[k]['L_main'], similar_group[k]['a_main'], similar_group[k]['b_main']],
+                            [similar_group[l]['L_main'], similar_group[l]['a_main'], similar_group[l]['b_main']]
+                        )
+                        if not pd.isna(delta_e):
+                            group_delta_es.append(delta_e)
+                
+                # Create group info
+                cluster_regions = {}
+                for region in similar_group:
+                    cluster_regions[region['cluster_id']] = {
+                        'region_id': region['region_id'],
+                        'performance': region['performance'],
+                        'samples': region['samples']
+                    }
+                
+                group_name = "Universal_" + "_".join([f"ST{c}R{cluster_regions[c]['region_id']}" for c in sorted(group_clusters)])
+                
+                universal_groups.append({
+                    'group_name': group_name,
+                    'cluster_regions': cluster_regions,
+                    'avg_performance': np.mean([r['performance'] for r in similar_group]),
+                    'min_performance': np.min([r['performance'] for r in similar_group]),
+                    'max_performance': np.max([r['performance'] for r in similar_group]),
+                    'total_samples': sum([r['samples'] for r in similar_group]),
+                    'cluster_count': len(group_clusters),
+                    'avg_delta_e': np.mean(group_delta_es) if group_delta_es else 0,
+                    'max_delta_e': np.max(group_delta_es) if group_delta_es else 0,
+                    'regions_data': similar_group
+                })
+        
+        # Sort by average performance and cluster count
+        universal_groups.sort(key=lambda x: (x['cluster_count'], x['avg_performance']), reverse=True)
+        
+        print(f"Found {len(universal_groups)} universal groups")
+        return universal_groups
+
+    def _calculate_universal_centroids(self, universal_groups, cluster_data):
+        """Calculate centroid colors for universal groups"""
+        centroid_colors = []
+        
+        for group in universal_groups:
+            regions_data = group['regions_data']
+            
+            # Calculate centroids for main and reflect colors
+            main_centroid = {
+                'L': np.mean([r['L_main'] for r in regions_data]),
+                'a': np.mean([r['a_main'] for r in regions_data]),
+                'b': np.mean([r['b_main'] for r in regions_data])
+            }
+            
+            reflect_centroid = {
+                'L': np.mean([r['L_reflect'] for r in regions_data]),
+                'a': np.mean([r['a_reflect'] for r in regions_data]),
+                'b': np.mean([r['b_reflect'] for r in regions_data])
+            }
+            
+            centroid_colors.append({
+                'group_name': group['group_name'],
+                'cluster_count': group['cluster_count'],
+                'centroid_main_L': main_centroid['L'],
+                'centroid_main_a': main_centroid['a'],
+                'centroid_main_b': main_centroid['b'],
+                'centroid_reflect_L': reflect_centroid['L'],
+                'centroid_reflect_a': reflect_centroid['a'],
+                'centroid_reflect_b': reflect_centroid['b']
+            })
+        
+        return centroid_colors
+
+    def _calculate_universal_performance(self, universal_groups, cluster_data):
+        """Calculate performance summaries for universal groups"""
+        performance_summary = {}
+        
+        for group in universal_groups:
+            group_name = group['group_name']
+            cluster_regions = group['cluster_regions']
+            
+            performance_by_cluster = {}
+            for cluster_id, region_info in cluster_regions.items():
+                performance_by_cluster[cluster_id] = region_info['performance']
+            
+            performance_summary[group_name] = {
+                'cluster_performances': performance_by_cluster,
+                'avg_performance': group['avg_performance'],
+                'performance_std': np.std(list(performance_by_cluster.values())),
+                'consistency_score': 100 - np.std(list(performance_by_cluster.values()))  # Higher = more consistent
+            }
+        
+        return performance_summary
+
+    def _create_cluster_coverage_matrix(self, universal_groups, analyzed_clusters):
+        """Create cluster coverage matrix for visualization"""
+        coverage_data = []
+        
+        for group in universal_groups:
+            for cluster_id in analyzed_clusters:
+                if cluster_id in group['cluster_regions']:
+                    region_info = group['cluster_regions'][cluster_id]
+                    coverage_data.append({
+                        'group_name': group['group_name'],
+                        'cluster_id': cluster_id,
+                        'region_id': region_info['region_id'],
+                        'performance': region_info['performance'],
+                        'samples': region_info['samples'],
+                        'covered': True
+                    })
+                else:
+                    coverage_data.append({
+                        'group_name': group['group_name'],
+                        'cluster_id': cluster_id,
+                        'region_id': None,
+                        'performance': 0,
+                        'samples': 0,
+                        'covered': False
+                    })
+        
+        return pd.DataFrame(coverage_data)
+
+    def create_universal_performance_chart(self, universal_regions, analyzed_clusters):
+        """Create performance chart for universal regions"""
+        if len(universal_regions) == 0:
+            return None
+        
+        group_names = [group['group_name'] for group in universal_regions]
+        avg_performances = [group['avg_performance'] for group in universal_regions]
+        cluster_counts = [group['cluster_count'] for group in universal_regions]
+        
+        # Debug information
+        print(f"DEBUG: Creating chart for {len(universal_regions)} groups")
+        print(f"DEBUG: Cluster counts: {cluster_counts}")
+        print(f"DEBUG: Min count: {min(cluster_counts) if cluster_counts else 'N/A'}")
+        print(f"DEBUG: Max count: {max(cluster_counts) if cluster_counts else 'N/A'}")
+        print(f"DEBUG: Unique counts: {list(set(cluster_counts))}")
+        
+        fig = go.Figure()
+        
+        # Simple, safe color assignment
+        colors_to_use = []
+        color_palette = ['#2649B2', '#4A74F3', '#8E7DE3', '#9D5CE6', '#D4D9F0', '#6C8BE0', '#B55CE6']
+        
+        for i, count in enumerate(cluster_counts):
+            color_index = (count - min(cluster_counts)) % len(color_palette) if cluster_counts else 0
+            colors_to_use.append(color_palette[color_index])
+        
+        fig.add_trace(go.Bar(
+            x=group_names,
+            y=avg_performances,
+            text=[f"{x:.1f}%" for x in avg_performances],
+            textposition='outside',
+            marker_color=colors_to_use,
+            hovertemplate="<b>%{x}</b><br>" +
+                        "Avg Performance: %{y:.1f}%<br>" +
+                        "Cluster Count: %{customdata}<br>" +
+                        "<extra></extra>",
+            customdata=cluster_counts,
+            name="Average Performance"
+        ))
+        
+        fig.update_layout(
+            title=f'Universal Region Groups Performance<br>Across {len(analyzed_clusters)} Skin Tone Clusters',
+            xaxis_title='Universal Groups',
+            yaxis_title='Average Performance Score (%)',
+            xaxis={'tickangle': 45},
+            height=500,
+            showlegend=False
+        )
+        
+        return fig
+
+
+    def create_universal_color_swatches(self, centroid_colors, universal_regions):
+        """Create color swatches for universal groups"""
+        if len(centroid_colors) == 0:
+            return None
+        
+        n_groups = len(centroid_colors)
+        fig, axes = plt.subplots(n_groups, 3, figsize=(15, n_groups * 2.5))
+        
+        if n_groups == 1:
+            axes = axes.reshape(1, -1)
+        
+        for i, centroid in enumerate(centroid_colors):
+            try:
+                # Main color centroid
+                rgb_main = self._lab_to_rgb(centroid['centroid_main_L'], centroid['centroid_main_a'], centroid['centroid_main_b'])
+                axes[i, 0].add_patch(Rectangle((0, 0), 1, 1, color=rgb_main))
+                axes[i, 0].set_title(f"Main Color Centroid\nL={centroid['centroid_main_L']:.1f}, a={centroid['centroid_main_a']:.1f}, b={centroid['centroid_main_b']:.1f}", fontsize=10)
+                axes[i, 0].axis('off')
+                
+                # Reflect color centroid
+                rgb_reflect = self._lab_to_rgb(centroid['centroid_reflect_L'], centroid['centroid_reflect_a'], centroid['centroid_reflect_b'])
+                axes[i, 1].add_patch(Rectangle((0, 0), 1, 1, color=rgb_reflect))
+                axes[i, 1].set_title(f"Reflect Color Centroid\nL={centroid['centroid_reflect_L']:.1f}, a={centroid['centroid_reflect_a']:.1f}, b={centroid['centroid_reflect_b']:.1f}", fontsize=10)
+                axes[i, 1].axis('off')
+                
+                # Group info
+                group = next(g for g in universal_regions if g['group_name'] == centroid['group_name'])
+                info_text = f"{centroid['group_name']}\n\n"
+                info_text += f"Clusters: {centroid['cluster_count']}\n"
+                info_text += f"Avg Performance: {group['avg_performance']:.1f}%\n"
+                info_text += f"Total Samples: {group['total_samples']}\n"
+                info_text += f"Avg ΔE: {group['avg_delta_e']:.2f}"
+                
+                axes[i, 2].text(0.05, 0.95, info_text, ha='left', va='top', fontsize=10, 
+                            transform=axes[i, 2].transAxes, fontweight='bold')
+                axes[i, 2].set_xlim(0, 1)
+                axes[i, 2].set_ylim(0, 1)
+                axes[i, 2].set_title("Group Information", fontsize=10)
+                axes[i, 2].axis('off')
+                
+            except Exception as e:
+                print(f"Error creating swatch for universal group {i}: {e}")
+        
+        plt.suptitle('Universal Color Groups - Centroid Colors', fontsize=16, fontweight='bold')
+        plt.tight_layout()
+        
+        return fig
+
+    def create_universal_excel_data(self, universal_results, params):
+        """Create Excel data for universal analysis"""
+        universal_regions = universal_results['universal_regions']
+        centroid_colors = universal_results['centroid_colors']
+        cluster_coverage = universal_results['cluster_coverage']
+        analyzed_clusters = universal_results['analyzed_clusters']
+        
+        # Universal regions data
+        universal_excel_data = []
+        for group in universal_regions:
+            cluster_info = []
+            region_info = []
+            performance_info = []
+            
+            for cluster_id in sorted(group['cluster_regions'].keys()):
+                region_data = group['cluster_regions'][cluster_id]
+                cluster_info.append(f"ST{cluster_id}")
+                region_info.append(f"R{region_data['region_id']}")
+                performance_info.append(f"{region_data['performance']:.1f}%")
+            
+            universal_excel_data.append({
+                'Group_Name': group['group_name'],
+                'Cluster_Count': group['cluster_count'],
+                'Clusters_Covered': ", ".join(cluster_info),
+                'Region_IDs': ", ".join(region_info),
+                'Performance_Scores': ", ".join(performance_info),
+                'Avg_Performance': group['avg_performance'],
+                'Min_Performance': group['min_performance'],
+                'Max_Performance': group['max_performance'],
+                'Total_Samples': group['total_samples'],
+                'Avg_DeltaE': group['avg_delta_e'],
+                'Max_DeltaE': group['max_delta_e']
+            })
+        
+        # Centroid colors data
+        centroid_excel_data = []
+        for centroid in centroid_colors:
+            centroid_excel_data.append({
+                'Group_Name': centroid['group_name'],
+                'Cluster_Count': centroid['cluster_count'],
+                'Main_L': centroid['centroid_main_L'],
+                'Main_a': centroid['centroid_main_a'],
+                'Main_b': centroid['centroid_main_b'],
+                'Reflect_L': centroid['centroid_reflect_L'],
+                'Reflect_a': centroid['centroid_reflect_a'],
+                'Reflect_b': centroid['centroid_reflect_b']
+            })
+        
+        # Summary data
+        summary_data = {
+            'Metric': [
+                'Analysis Type',
+                'Metric Column Used',
+                'Clusters Analyzed',
+                'DeltaE Threshold',
+                'Min Clusters Required',
+                'Performance Threshold (%)',
+                'Universal Groups Found',
+                'Best Group',
+                'Best Group Performance (%)',
+                'Best Group Cluster Count',
+                'Analysis Date'
+            ],
+            'Value': [
+                'Universal Regions Analysis',
+                params['metric_column'],
+                ", ".join([f"ST{c}" for c in analyzed_clusters]),
+                params['delta_e_threshold'],
+                params['min_clusters_required'],
+                params['min_performance_threshold'],
+                len(universal_regions),
+                universal_regions[0]['group_name'] if universal_regions else 'None',
+                f"{universal_regions[0]['avg_performance']:.1f}" if universal_regions else 'N/A',
+                universal_regions[0]['cluster_count'] if universal_regions else 'N/A',
+                pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')
+            ]
+        }
+        
+        return {
+            'universal_regions': pd.DataFrame(universal_excel_data),
+            'centroid_colors': pd.DataFrame(centroid_excel_data),
+            'cluster_coverage': cluster_coverage,
             'summary': pd.DataFrame(summary_data)
         }
