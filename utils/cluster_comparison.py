@@ -16,15 +16,42 @@ class ClusterComparator:
     def __init__(self):
         self.delta_e_threshold = 3.0
     
-    def compare_two_clusters(self, cluster_results_1, cluster_results_2, cluster_id_1, cluster_id_2, delta_e_threshold=3.0, top_n=10, metric_column='combined_criteria_pct'):
+    def compare_two_clusters(self, cluster_results_1, cluster_results_2, cluster_id_1, cluster_id_2, 
+                        delta_e_threshold=3.0, top_n=10, metric_column='combined_criteria_pct', 
+                        reflect_delta_e_threshold=None):
         """
-        Compare two specific clusters using DeltaE analysis
+        Compare two specific clusters using DeltaE analysis with conditional reflect color checking
+        
+        Args:
+            cluster_results_1: First cluster results dict
+            cluster_results_2: Second cluster results dict  
+            cluster_id_1: First cluster ID
+            cluster_id_2: Second cluster ID
+            delta_e_threshold: Threshold for main color similarity (backward compatibility)
+            top_n: Number of top regions to compare
+            metric_column: Column to use for sorting/scoring
+            reflect_delta_e_threshold: Threshold for reflect color similarity (defaults to 2x main threshold)
+            
+        Logic:
+            1. Calculate DeltaE for main colors
+            2. If main colors are similar (< delta_e_threshold), then calculate reflect DeltaE
+            3. Check if reflect colors are also similar (< reflect_delta_e_threshold)
         """
-        self.delta_e_threshold = delta_e_threshold
+        # Use delta_e_threshold as main_delta_e_threshold for backward compatibility
+        main_delta_e_threshold = delta_e_threshold
+        
+        # Set default reflect threshold as 2x main threshold
+        if reflect_delta_e_threshold is None:
+            reflect_delta_e_threshold = main_delta_e_threshold * 2.0
+        
+        # Store both thresholds for later use
+        self.main_delta_e_threshold = main_delta_e_threshold
+        self.reflect_delta_e_threshold = reflect_delta_e_threshold
         
         print(f"\n=== DEBUGGING CLUSTER COMPARISON ===")
         print(f"Comparing Cluster {cluster_id_1} vs Cluster {cluster_id_2}")
-        print(f"DeltaE threshold: {delta_e_threshold}")
+        print(f"Main DeltaE threshold: {main_delta_e_threshold}")
+        print(f"Reflect DeltaE threshold: {reflect_delta_e_threshold}")
         print(f"Metric column: {metric_column}")
         
         # Get data for both clusters
@@ -63,6 +90,9 @@ class ClusterComparator:
         comparison_results = []
         total_attempts = 0
         successful_comparisons = 0
+        main_similar_count = 0
+        both_similar_count = 0
+        reflect_checked_count = 0
         
         print(f"\n=== PERFORMING COMPARISONS ===")
         
@@ -128,11 +158,23 @@ class ClusterComparator:
                 lab_main_2 = [center_2['L_main'], center_2['a_main'], center_2['b_main']]
                 lab_reflect_2 = [center_2['L_reflect'], center_2['a_reflect'], center_2['b_reflect']]
                 
-                # Calculate deltaE for main colors using our custom implementation
+                # STEP 1: Calculate deltaE for main colors (always calculated)
                 delta_e_main = self._calculate_delta_e_cie2000_custom(lab_main_1, lab_main_2)
                 
-                # Calculate deltaE for reflect colors
-                delta_e_reflect = self._calculate_delta_e_custom(lab_reflect_1, lab_reflect_2)
+                # STEP 2: Check if main colors are similar
+                is_main_similar = bool(delta_e_main < main_delta_e_threshold) if not pd.isna(delta_e_main) else False
+                
+                # STEP 3: Only calculate reflect deltaE if main colors are similar
+                delta_e_reflect = np.nan
+                is_reflect_similar = False
+                
+                if is_main_similar:
+                    reflect_checked_count += 1
+                    delta_e_reflect = self._calculate_delta_e_custom(lab_reflect_1, lab_reflect_2)
+                    is_reflect_similar = bool(delta_e_reflect < reflect_delta_e_threshold) if not pd.isna(delta_e_reflect) else False
+                
+                # STEP 4: Determine if both criteria are met
+                meets_both_criteria = is_main_similar and is_reflect_similar
                 
                 if not pd.isna(delta_e_main):
                     comparison_results.append({
@@ -144,7 +186,10 @@ class ClusterComparator:
                         f'region_{cluster_id_2}_samples': int(region_2['total_samples']),
                         'delta_e_main': float(delta_e_main),
                         'delta_e_reflect': float(delta_e_reflect) if not pd.isna(delta_e_reflect) else np.nan,
-                        'similar_main': bool(delta_e_main < delta_e_threshold),
+                        'similar_main': is_main_similar,
+                        'similar_reflect': is_reflect_similar,
+                        'meets_both_criteria': meets_both_criteria,
+                        'reflect_checked': not pd.isna(delta_e_reflect),
                         f'L_main_{cluster_id_1}': float(center_1['L_main']), 
                         f'a_main_{cluster_id_1}': float(center_1['a_main']), 
                         f'b_main_{cluster_id_1}': float(center_1['b_main']),
@@ -160,12 +205,20 @@ class ClusterComparator:
                     })
                     successful_comparisons += 1
                     comparisons_for_this_region += 1
+                    
+                    if is_main_similar:
+                        main_similar_count += 1
+                    if meets_both_criteria:
+                        both_similar_count += 1
             
             print(f"    Successful comparisons for this region: {comparisons_for_this_region}")
         
         print(f"\n=== COMPARISON SUMMARY ===")
         print(f"Total attempts: {total_attempts}")
         print(f"Successful comparisons: {successful_comparisons}")
+        print(f"Main color similar pairs: {main_similar_count}")
+        print(f"Reflect colors checked: {reflect_checked_count}")
+        print(f"Both criteria met pairs: {both_similar_count}")
         print(f"Generated {len(comparison_results)} comparison results")
         
         if len(comparison_results) == 0:
@@ -173,22 +226,43 @@ class ClusterComparator:
             self._provide_diagnostic_info(top_1, centers_1, top_2, centers_2, cluster_id_1, cluster_id_2)
             raise ValueError(f"No valid comparisons could be made between clusters {cluster_id_1} and {cluster_id_2}. See diagnostic information above.")
         
-        # Convert to DataFrame and filter similar colors
+        # Convert to DataFrame and create different filtered views
         comparison_df = pd.DataFrame(comparison_results)
-        similar_pairs = comparison_df[comparison_df['similar_main'] == True].copy()
-        similar_pairs = similar_pairs.sort_values('delta_e_main') if len(similar_pairs) > 0 else similar_pairs
         
-        print(f"Similar main color pairs found (ΔE < {delta_e_threshold}): {len(similar_pairs)}")
+        # Filter 1: Regions with similar main colors (reflects may or may not have been checked)
+        similar_main_pairs = comparison_df[comparison_df['similar_main'] == True].copy()
+        similar_main_pairs = similar_main_pairs.sort_values('delta_e_main') if len(similar_main_pairs) > 0 else similar_main_pairs
+        
+        # Filter 2: Regions meeting BOTH criteria (main similar AND reflect similar)
+        both_criteria_pairs = comparison_df[comparison_df['meets_both_criteria'] == True].copy()
+        both_criteria_pairs = both_criteria_pairs.sort_values('delta_e_main') if len(both_criteria_pairs) > 0 else both_criteria_pairs
+        
+        # Filter 3: Regions where reflects were checked (main was similar)
+        reflect_checked_pairs = comparison_df[comparison_df['reflect_checked'] == True].copy()
+        reflect_checked_pairs = reflect_checked_pairs.sort_values('delta_e_main') if len(reflect_checked_pairs) > 0 else reflect_checked_pairs
+        
+        print(f"Similar main color pairs found (ΔE < {main_delta_e_threshold}): {len(similar_main_pairs)}")
+        print(f"Both criteria met pairs found: {len(both_criteria_pairs)}")
+        print(f"Reflect colors checked pairs: {len(reflect_checked_pairs)}")
         
         return {
             'comparison_df': comparison_df,
-            'similar_pairs': similar_pairs,
+            'similar_pairs': similar_main_pairs,  # Keep this for backward compatibility
+            'similar_main_pairs': similar_main_pairs,
+            'both_criteria_pairs': both_criteria_pairs,
+            'reflect_checked_pairs': reflect_checked_pairs,
             'cluster_id_1': cluster_id_1,
             'cluster_id_2': cluster_id_2,
-            'delta_e_threshold': delta_e_threshold,
+            'delta_e_threshold': main_delta_e_threshold,  # Keep old name for compatibility
+            'main_delta_e_threshold': main_delta_e_threshold,
+            'reflect_delta_e_threshold': reflect_delta_e_threshold,
             'total_comparisons': len(comparison_df),
-            'similar_count': len(similar_pairs),
-            'similarity_rate': (len(similar_pairs) / len(comparison_df) * 100) if len(comparison_df) > 0 else 0,
+            'main_similar_count': len(similar_main_pairs),
+            'both_criteria_count': len(both_criteria_pairs),
+            'reflect_checked_count': len(reflect_checked_pairs),
+            'similarity_rate': (len(similar_main_pairs) / len(comparison_df) * 100) if len(comparison_df) > 0 else 0,  # Keep old name
+            'main_similarity_rate': (len(similar_main_pairs) / len(comparison_df) * 100) if len(comparison_df) > 0 else 0,
+            'both_criteria_rate': (len(both_criteria_pairs) / len(comparison_df) * 100) if len(comparison_df) > 0 else 0,
             'metric_column': metric_column
         }
     

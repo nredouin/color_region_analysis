@@ -534,12 +534,12 @@ def show_cluster_comparison_analysis(available_clusters, threshold, metric_colum
     
     with col3:
         delta_e_threshold = st.slider(
-            "DeltaE Threshold",
+            "Main Color DeltaE Threshold",  # Updated label
             min_value=1.0,
             max_value=10.0,
             value=3.0,
             step=0.5,
-            help="Lower values = more similar colors required"
+            help="Lower values = more similar main colors required"
         )
     
     if cluster_1 == cluster_2:
@@ -548,7 +548,7 @@ def show_cluster_comparison_analysis(available_clusters, threshold, metric_colum
     
     # Comparison parameters
     st.subheader("🔧 Comparison Parameters")
-    col1, col2 = st.columns(2)
+    col1, col2, col3 = st.columns(3)  # Changed to 3 columns
     
     with col1:
         top_n_compare = st.slider(
@@ -566,12 +566,28 @@ def show_cluster_comparison_analysis(available_clusters, threshold, metric_colum
             value=8
         )
     
+    with col3:  # NEW: Reflect threshold multiplier
+        reflect_multiplier = st.slider(
+            "Reflect threshold multiplier",
+            min_value=1.0,
+            max_value=5.0,
+            value=2.0,
+            step=0.1,
+            help="Reflect threshold = Main threshold × this multiplier"
+        )
+    
+    # Calculate reflect threshold
+    reflect_threshold = delta_e_threshold * reflect_multiplier
+    st.info(f"🎯 **Thresholds**: Main Colors ≤ {delta_e_threshold:.1f}, Reflect Colors ≤ {reflect_threshold:.1f}")
+    
+    # Rest of your code remains the same until the comparison call...
+    
     # Perform comparison
     if st.button("🔍 Perform DeltaE Comparison", type="primary"):
         with st.spinner(f"Comparing clusters {cluster_1} and {cluster_2}..."):
             
             try:
-                # Load data for both clusters
+                # Load data for both clusters (unchanged)
                 cluster_results = {}
                 for cluster_id in [cluster_1, cluster_2]:
                     file_path = f"results/df_100_eval_{cluster_id}_min_100_minwomen_50.0_s1r_0.0.csv"
@@ -593,7 +609,7 @@ def show_cluster_comparison_analysis(available_clusters, threshold, metric_colum
                     st.error("Failed to load data for both clusters!")
                     return
                 
-                # Perform comparison
+                # Perform comparison with reflect threshold
                 comparison_results = st.session_state.comparator.compare_two_clusters(
                     {cluster_1: cluster_results[cluster_1]},
                     {cluster_2: cluster_results[cluster_2]}, 
@@ -601,10 +617,11 @@ def show_cluster_comparison_analysis(available_clusters, threshold, metric_colum
                     cluster_2, 
                     delta_e_threshold, 
                     top_n_compare,
-                    metric_column
+                    metric_column,
+                    reflect_threshold  # NEW: Add reflect threshold
                 )
                 
-                # Store results in session state
+                # Store results in session state (add new values)
                 st.session_state.comparison_results = comparison_results
                 st.session_state.cluster_1 = cluster_1
                 st.session_state.cluster_2 = cluster_2
@@ -612,6 +629,8 @@ def show_cluster_comparison_analysis(available_clusters, threshold, metric_colum
                 st.session_state.max_pairs_display = max_pairs_display
                 st.session_state.metric_column = metric_column
                 st.session_state.metric_description = metric_description
+                st.session_state.reflect_multiplier = reflect_multiplier  # NEW
+                st.session_state.reflect_threshold = reflect_threshold  # NEW
                 
                 st.success("✅ Comparison analysis completed!")
                 
@@ -621,7 +640,7 @@ def show_cluster_comparison_analysis(available_clusters, threshold, metric_colum
                 st.code(traceback.format_exc())
                 return
     
-    # Display results if available
+    # Display results if available (unchanged)
     if 'comparison_results' in st.session_state:
         show_comparison_results()
         show_similar_pairs_recap()
@@ -630,6 +649,7 @@ def show_comparison_results():
     """Display comparison results"""
     comparison_results = st.session_state.comparison_results
     similar_pairs = comparison_results['similar_pairs']
+    both_criteria_pairs = comparison_results['both_criteria_pairs']  # NEW
     comparison_df = comparison_results['comparison_df']
     cluster_1 = st.session_state.cluster_1
     cluster_2 = st.session_state.cluster_2
@@ -642,74 +662,150 @@ def show_comparison_results():
     st.subheader("📊 Comparison Results")
     st.info(f"**Performance Metric Used**: {metric_description}")
     
-    col1, col2, col3, col4 = st.columns(4)
+    # Updated metrics display
+    col1, col2, col3, col4, col5 = st.columns(5)  # Added one more column
     
     with col1:
         st.metric("Total Comparisons", comparison_results['total_comparisons'])
     
     with col2:
-        st.metric("Similar Pairs Found", comparison_results['similar_count'])
+        st.metric("Main Similar", comparison_results['main_similar_count'])
     
     with col3:
-        st.metric("Similarity Rate", f"{comparison_results['similarity_rate']:.1f}%")
+        st.metric("Both Criteria Met", comparison_results['both_criteria_count'])  # NEW
     
     with col4:
-        if len(similar_pairs) > 0:
+        st.metric("Reflect Checked", comparison_results['reflect_checked_count'])  # NEW
+    
+    with col5:
+        if len(both_criteria_pairs) > 0:
+            best_match = both_criteria_pairs.iloc[0]
+            st.metric("Best Match ΔE", f"{best_match['delta_e_main']:.2f}")
+        elif len(similar_pairs) > 0:
             best_match = similar_pairs.iloc[0]
             st.metric("Best Match ΔE", f"{best_match['delta_e_main']:.2f}")
         else:
             st.metric("Best Match ΔE", "N/A")
     
-    # DeltaE scatter plot
+    # Display threshold information
+    main_threshold = comparison_results.get('main_delta_e_threshold', comparison_results.get('delta_e_threshold', 3.0))
+    reflect_threshold = comparison_results.get('reflect_delta_e_threshold', main_threshold * 2)
+    
+    st.info(f"🎯 **Applied Thresholds**: Main Colors ≤ {main_threshold:.1f}, Reflect Colors ≤ {reflect_threshold:.1f}")
+    
+    # Success rates
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("Main Similarity Rate", f"{comparison_results.get('main_similarity_rate', 0):.1f}%")
+    with col2:
+        st.metric("Both Criteria Rate", f"{comparison_results.get('both_criteria_rate', 0):.1f}%")
+    with col3:
+        reflect_check_rate = (comparison_results['reflect_checked_count'] / comparison_results['total_comparisons'] * 100) if comparison_results['total_comparisons'] > 0 else 0
+        st.metric("Reflect Check Rate", f"{reflect_check_rate:.1f}%")
+    
+    # Display options for different pair types
+    st.subheader("📋 Analysis Options")
+    analysis_type = st.radio(
+        "Choose pairs to analyze:",
+        ["Both Criteria Met", "Main Color Similar", "All Comparisons"],
+        index=0 if len(both_criteria_pairs) > 0 else 1
+    )
+    
+    # Select which pairs to display based on choice
+    if analysis_type == "Both Criteria Met" and len(both_criteria_pairs) > 0:
+        display_pairs = both_criteria_pairs
+        pairs_description = f"pairs meeting BOTH main (≤{main_threshold:.1f}) AND reflect (≤{reflect_threshold:.1f}) criteria"
+    elif analysis_type == "Main Color Similar" and len(similar_pairs) > 0:
+        display_pairs = similar_pairs
+        pairs_description = f"pairs with similar main colors (≤{main_threshold:.1f})"
+    else:
+        display_pairs = comparison_df
+        pairs_description = "all region pairs compared"
+    
+    st.info(f"Showing {len(display_pairs)} {pairs_description}")
+    
+    # DeltaE scatter plot (this should work with your existing function)
     st.subheader("📈 DeltaE Analysis")
     fig_scatter = st.session_state.comparator.create_delta_e_scatter_plotly(
-        comparison_df, similar_pairs, cluster_1, cluster_2
+        comparison_df, display_pairs, cluster_1, cluster_2
     )
     st.plotly_chart(fig_scatter, use_container_width=True)
     
     # Similar pairs visualization
-    if len(similar_pairs) > 0:
+    if len(display_pairs) > 0:
         st.subheader("🎨 Similar Color Pairs")
         
         # Color comparison plot
         fig_colors = st.session_state.comparator.create_color_comparison_plot(
-            similar_pairs, cluster_1, cluster_2, max_pairs_display
+            display_pairs, cluster_1, cluster_2, max_pairs_display
         )
         
         if fig_colors:
             st.pyplot(fig_colors, clear_figure=True)
         
-        # Similar pairs table
-        st.subheader("📋 Similar Pairs Details")
+        # Similar pairs table with new columns
+        st.subheader("📋 Detailed Pairs Table")
         
-        # Format similar pairs for display
-        display_pairs = similar_pairs.copy()
+        # Format pairs for display with new columns
+        display_pairs_copy = display_pairs.copy()
         display_cols = [
             f'region_{cluster_1}_id', f'region_{cluster_2}_id', 
             'delta_e_main', 'delta_e_reflect',
+            'similar_main', 'similar_reflect', 'meets_both_criteria',  # NEW columns
             f'region_{cluster_1}_score', f'region_{cluster_2}_score',
             f'region_{cluster_1}_samples', f'region_{cluster_2}_samples'
         ]
         
-        display_df = display_pairs[display_cols].round(2)
-        display_df.columns = [
-            f'ST{cluster_1} Region', f'ST{cluster_2} Region',
-            'ΔE Main', 'ΔE Reflect', 
-            f'ST{cluster_1} Score %', f'ST{cluster_2} Score %',
-            f'ST{cluster_1} Samples', f'ST{cluster_2} Samples'
-        ]
+        # Only include columns that exist
+        display_cols = [col for col in display_cols if col in display_pairs_copy.columns]
         
+        display_df = display_pairs_copy[display_cols].round(2)
+        
+        # Update column names
+        new_col_names = []
+        for col in display_cols:
+            if col == f'region_{cluster_1}_id':
+                new_col_names.append(f'ST{cluster_1} Region')
+            elif col == f'region_{cluster_2}_id':
+                new_col_names.append(f'ST{cluster_2} Region')
+            elif col == 'delta_e_main':
+                new_col_names.append('ΔE Main')
+            elif col == 'delta_e_reflect':
+                new_col_names.append('ΔE Reflect')
+            elif col == 'similar_main':
+                new_col_names.append('Main Similar')
+            elif col == 'similar_reflect':
+                new_col_names.append('Reflect Similar')
+            elif col == 'meets_both_criteria':
+                new_col_names.append('Both Criteria')
+            elif col == f'region_{cluster_1}_score':
+                new_col_names.append(f'ST{cluster_1} Score %')
+            elif col == f'region_{cluster_2}_score':
+                new_col_names.append(f'ST{cluster_2} Score %')
+            elif col == f'region_{cluster_1}_samples':
+                new_col_names.append(f'ST{cluster_1} Samples')
+            elif col == f'region_{cluster_2}_samples':
+                new_col_names.append(f'ST{cluster_2} Samples')
+            else:
+                new_col_names.append(col)
+        
+        display_df.columns = new_col_names
         st.dataframe(display_df, use_container_width=True)
         
         # Hair rendering for best match
         st.subheader("💇‍♀️ Hair Rendering - Best Match")
         
         if st.button("🎨 Render Best Matching Pair"):
-            render_best_matching_pair(similar_pairs, st.session_state.cluster_results_comparison, cluster_1, cluster_2)
+            render_best_matching_pair(display_pairs, st.session_state.cluster_results_comparison, cluster_1, cluster_2)
     
     else:
-        st.warning(f"No similar color pairs found with ΔE threshold < {comparison_results['delta_e_threshold']}")
-        st.info("Try increasing the DeltaE threshold to find more matches.")
+        threshold_used = comparison_results.get('main_delta_e_threshold', comparison_results.get('delta_e_threshold', 3.0))
+        if analysis_type == "Both Criteria Met":
+            st.warning(f"No pairs found meeting BOTH criteria (Main ≤{main_threshold:.1f} AND Reflect ≤{reflect_threshold:.1f})")
+            st.info("Try increasing the thresholds or check 'Main Color Similar' pairs.")
+        else:
+            st.warning(f"No similar color pairs found with Main ΔE threshold < {threshold_used}")
+            st.info("Try increasing the DeltaE threshold to find more matches.")
 
 def show_similar_pairs_recap():
     """Display the similar pairs recap analysis"""
