@@ -10,6 +10,7 @@ from utils.color_analysis import ColorAnalyzer
 from utils.hair_rendering import HairRenderer
 from utils.streamlit_helpers import StreamlitHelpers
 from utils.cluster_comparison import ClusterComparator
+from utils.file_paths import build_file_path
 
 # Import our new modular components
 from front.ui_components import create_sidebar, create_main_header
@@ -27,6 +28,23 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
+
+@st.cache_data
+def load_cluster_data_cached(file_path, threshold, top_n, metric_column):
+    """Cached data loading function"""
+    if not os.path.exists(file_path):
+        return None
+    
+    # Initialize analyzer
+    analyzer = ColorAnalyzer()
+    
+    # Analyze the data
+    return analyzer.analyze_color_regions(
+        file_path, 
+        threshold=threshold, 
+        top_n=top_n, 
+        metric_column=metric_column
+    )
 
 def main():
     # Apply custom styling
@@ -51,21 +69,33 @@ def main():
     if config['analysis_mode'] != "Compare Clusters (DeltaE)":
         with st.spinner(f"Loading data for {len(config['selected_clusters'])} cluster(s)..."):
             for cluster_id in config['selected_clusters']:
-                file_path = f"results/df_100_eval_{cluster_id}_min_100_minwomen_50.0_s1r_0.0.csv"
+                # Build dynamic file path
+                file_path = build_file_path(
+                    cluster_id, 
+                    category=config.get('category'),
+                    eval_cluster=config.get('eval_cluster'), 
+                    min_age=config.get('min_age')
+                )
+                
+                st.info(f"Loading: {file_path}")
                 
                 try:
-                    analysis_results = st.session_state.analyzer.analyze_color_regions(
+                    # Use cached loading function
+                    analysis_results = load_cluster_data_cached(
                         file_path, 
-                        threshold=config['threshold'], 
-                        top_n=config['top_n_regions'], 
-                        metric_column=config['metric_column']
+                        config['threshold'], 
+                        config['top_n_regions'], 
+                        config['metric_column']
                     )
                     
                     if analysis_results is not None:
                         cluster_results[cluster_id] = analysis_results
+                        st.success(f"✅ Loaded cluster {cluster_id}")
+                    else:
+                        st.warning(f"⚠️ Color regions were not computed for cluster {cluster_id} with the selected parameters")
                         
                 except Exception as e:
-                    st.error(f"Error loading data for cluster {cluster_id}: {str(e)}")
+                    st.error(f"❌ Error loading data for cluster {cluster_id}: {str(e)}")
         
         if not cluster_results and config['analysis_mode'] != "Compare Clusters (DeltaE)":
             st.error("Failed to load any cluster data!")
@@ -76,7 +106,8 @@ def main():
         show_single_cluster_analysis(cluster_results, config)
         
     elif config['analysis_mode'] == "Compare Clusters (DeltaE)":
-        show_cluster_comparison_analysis(config)
+        # Pass the file path builder function to comparison analysis
+        show_cluster_comparison_analysis(config, build_file_path)
         
     else:  # Universal Regions
         show_universal_regions_analysis(cluster_results, config)

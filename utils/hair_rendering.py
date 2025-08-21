@@ -11,7 +11,7 @@ class HairRenderer:
     """Class for hair swatch rendering"""
     
     def __init__(self):
-        self.base_folder = "assets/"
+        self.base_folder = "data/assets/"
         self.cluster_num = 2
         self.seed = 42
         

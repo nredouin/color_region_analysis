@@ -40,21 +40,21 @@ def create_main_header():
             border-left: 4px solid #4A74F3;
             margin: 0.5rem 0;
         }
+        .parameter-section {
+            background-color: #f8f9fa;
+            padding: 1rem;
+            border-radius: 8px;
+            margin: 0.5rem 0;
+        }
     </style>
     """, unsafe_allow_html=True)
     
     st.markdown('<h1 class="main-header">🎨 L\'Oréal Multi-Cluster Hair Color Analysis & Comparison</h1>', unsafe_allow_html=True)
 
 def create_sidebar():
-    """Create sidebar configuration and return settings"""
+    """Create enhanced sidebar configuration with dynamic file path options"""
     with st.sidebar:
         st.header("📊 Analysis Configuration")
-        
-        # Find available clusters
-        available_clusters = find_available_clusters()
-        if not available_clusters:
-            st.error("No data files found in results folder!")
-            st.stop()
         
         # Analysis mode selection
         st.subheader("🔬 Analysis Mode")
@@ -63,6 +63,54 @@ def create_sidebar():
             ["Single Cluster", "Compare Clusters (DeltaE)", "Universal Regions"],
             help="Single: Analyze one cluster | Compare: DeltaE similarity analysis | Universal: Find regions across all clusters"
         )
+        
+        # Data Selection Parameters
+        st.markdown("---")
+        st.markdown('<div class="parameter-section">', unsafe_allow_html=True)
+        st.subheader("📁 Data Selection Parameters")
+        
+        # Category selection
+        category_options = ["All", "Light", "Medium", "Dark"]
+        category = st.selectbox(
+            "Hair Color Category",
+            category_options,
+            index=0,
+            help="Select specific hair color category or 'All' for general analysis"
+        )
+        
+        # Convert "All" to None for file path building
+        category_for_path = None if category == "All" else category
+        
+        # Eval cluster selection
+        eval_cluster_options = [None] + list(range(1, 7))
+        eval_cluster_labels = ["None"] + [f"Cluster {i}" for i in range(1, 7)]
+        
+        eval_cluster_index = st.selectbox(
+            "Evaluation Cluster",
+            range(len(eval_cluster_labels)),
+            format_func=lambda x: eval_cluster_labels[x],
+            index=0,
+            help="Select specific evaluation cluster for analysis"
+        )
+        eval_cluster = eval_cluster_options[eval_cluster_index]
+        
+        # Age selection
+        age_options = [None, 60]
+        age_labels = ["All Ages", "60+ Only"]
+        
+        age_index = st.selectbox(
+            "Age Filter",
+            range(len(age_labels)),
+            format_func=lambda x: age_labels[x],
+            index=0,
+            help="Filter by minimum age"
+        )
+        min_age = age_options[age_index]
+        
+        st.markdown('</div>', unsafe_allow_html=True)
+        
+        # Show file path preview
+        show_file_path_preview(category_for_path, eval_cluster, min_age)
         
         # Metric selection
         st.subheader("📈 Performance Metric")
@@ -77,7 +125,7 @@ def create_sidebar():
         st.info(f"**Selected Metric**: {metric_description}")
         
         # Cluster selection based on mode
-        selected_clusters = get_cluster_selection(analysis_mode, available_clusters)
+        selected_clusters = get_cluster_selection(analysis_mode, min_age, eval_cluster)
         
         # Analysis parameters
         st.subheader("⚙️ Analysis Parameters")
@@ -101,6 +149,11 @@ def create_sidebar():
         if analysis_mode == "Universal Regions":
             universal_params = get_universal_parameters(selected_clusters)
         
+        # DeltaE parameters for comparison mode
+        deltae_params = {}
+        if analysis_mode == "Compare Clusters (DeltaE)":
+            deltae_params = get_deltae_parameters()
+        
         # Hair rendering options
         rendering_options = get_rendering_options()
         
@@ -111,26 +164,32 @@ def create_sidebar():
             'metric_column': metric_column,
             'metric_description': metric_description,
             'selected_clusters': selected_clusters,
-            'available_clusters': available_clusters,
+            'category': category_for_path,
+            'eval_cluster': eval_cluster,
+            'min_age': min_age,
             'threshold': threshold,
             'top_n_regions': top_n_regions,
             'universal_params': universal_params,
+            'deltae_params': deltae_params,
             'rendering_options': rendering_options
         }
 
-def find_available_clusters():
-    """Find available cluster data files"""
-    available_clusters = []
-    results_folder = "results"
-    if os.path.exists(results_folder):
-        for file in os.listdir(results_folder):
-            if file.startswith("df_100_eval_") and file.endswith(".csv"):
-                match = re.search(r'df_100_eval_(\d+)_min_100_minwomen_50\.0_s1r_0\.0\.csv', file)
-                if match:
-                    available_clusters.append(int(match.group(1)))
+def show_file_path_preview(category, eval_cluster, min_age):
+    """Show preview of file path that will be generated"""
+    st.markdown("---")
+    st.subheader("🔍 File Path Preview")
     
-    available_clusters.sort()
-    return available_clusters
+    # Import here to avoid circular import - now safe since it's in utils
+    from utils.file_paths import build_file_path
+    
+    sample_path = build_file_path(1, category, eval_cluster, min_age)
+    st.code(sample_path, language="text")
+    
+    # Check if file exists
+    if os.path.exists(sample_path):
+        st.success("✅ File exists")
+    else:
+        st.warning("⚠️ File not found - will show message if selected")
 
 def get_metric_details(metric_type):
     """Get metric column name and description"""
@@ -141,17 +200,29 @@ def get_metric_details(metric_type):
     else:  # S2R Top2Box Only
         return "S2R_top2box_pct", "S2R Top2Box percentage"
 
-def get_cluster_selection(analysis_mode, available_clusters):
-    """Get cluster selection based on analysis mode"""
+def get_cluster_selection(analysis_mode, min_age, eval_cluster):
+    """Get cluster selection based on analysis mode and parameters"""
+    # Base cluster range
+    all_clusters = list(range(1, 7))
+    
+    # For universal regions with age filter and eval_cluster, use specific logic
+    if analysis_mode == "Universal Regions" and min_age == 60 and eval_cluster is not None:
+        # Compare all eval_clusters over 60
+        available_clusters = all_clusters
+        st.info("🌍 Universal analysis with age 60+ filter: comparing across all skin tone clusters")
+    else:
+        available_clusters = all_clusters
+    
     if analysis_mode == "Single Cluster":
         return [st.selectbox(
             "🎯 Select Skin Tone Cluster",
             available_clusters,
+            index=0,
             help="Choose which skin tone cluster to analyze"
         )]
     elif analysis_mode == "Compare Clusters (DeltaE)":
         st.info("You'll select clusters to compare on the main page")
-        return available_clusters  # Load all for comparison
+        return available_clusters  # Return all for selection on main page
     else:  # Universal Regions
         selected = st.multiselect(
             "🌍 Clusters for Universal Analysis",
@@ -188,6 +259,33 @@ def get_universal_parameters(selected_clusters):
     return {
         'min_clusters_required': min_clusters_required,
         'universal_threshold': universal_threshold
+    }
+
+def get_deltae_parameters():
+    """Get DeltaE comparison parameters"""
+    st.subheader("⚖️ DeltaE Comparison Settings")
+    
+    main_delta_e_threshold = st.slider(
+        "Main Color DeltaE Threshold",
+        min_value=1.0,
+        max_value=10.0,
+        value=3.0,
+        step=0.5,
+        help="Lower values = more similar main colors required"
+    )
+    
+    reflect_delta_e_threshold = st.slider(
+        "Reflect Color DeltaE Threshold", 
+        min_value=1.0,
+        max_value=15.0,
+        value=6.0,
+        step=0.5,
+        help="DeltaE threshold for reflect colors"
+    )
+    
+    return {
+        'main_delta_e_threshold': main_delta_e_threshold,
+        'reflect_delta_e_threshold': reflect_delta_e_threshold
     }
 
 def get_rendering_options():

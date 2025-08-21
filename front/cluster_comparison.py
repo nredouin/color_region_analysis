@@ -1,21 +1,23 @@
 import streamlit as st
 import pandas as pd
+import os
 from front.hair_rendering import render_best_matching_pair, render_centroid_hair
 
-def show_cluster_comparison_analysis(config):
+def show_cluster_comparison_analysis(config, build_file_path_func):
     """Show comparison analysis between two clusters using DeltaE"""
     st.header("🔍 Cluster Comparison Analysis (DeltaE Method)")
     st.info(f"**Performance Metric**: {config['metric_description']}")
     
-    available_clusters = config['available_clusters']
+    # Show current data parameters
+    show_current_data_parameters(config)
     
     # Cluster selection
-    col1, col2, col3 = st.columns(3)
+    col1, col2 = st.columns(2)
     
     with col1:
         cluster_1 = st.selectbox(
             "Select First Cluster",
-            available_clusters,
+            config['selected_clusters'],
             index=0,
             key="cluster_1_select"
         )
@@ -23,19 +25,9 @@ def show_cluster_comparison_analysis(config):
     with col2:
         cluster_2 = st.selectbox(
             "Select Second Cluster", 
-            available_clusters,
-            index=1 if len(available_clusters) > 1 else 0,
+            config['selected_clusters'],
+            index=1 if len(config['selected_clusters']) > 1 else 0,
             key="cluster_2_select"
-        )
-    
-    with col3:
-        delta_e_threshold = st.slider(
-            "Main Color DeltaE Threshold",
-            min_value=1.0,
-            max_value=10.0,
-            value=3.0,
-            step=0.5,
-            help="Lower values = more similar main colors required"
         )
     
     if cluster_1 == cluster_2:
@@ -43,23 +35,63 @@ def show_cluster_comparison_analysis(config):
         return
     
     # Comparison parameters
-    comparison_params = get_comparison_parameters(delta_e_threshold)
+    comparison_params = get_comparison_parameters(config)
     
     # Perform comparison
     if st.button("🔍 Perform DeltaE Comparison", type="primary"):
-        perform_comparison(cluster_1, cluster_2, comparison_params, config)
+        perform_comparison(cluster_1, cluster_2, comparison_params, config, build_file_path_func)
     
     # Display results if available
     if 'comparison_results' in st.session_state:
         show_comparison_results()
         show_similar_pairs_recap()
 
-def get_comparison_parameters(delta_e_threshold):
+def show_current_data_parameters(config):
+    """Show current data selection parameters"""
+    st.subheader("📁 Current Data Parameters")
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        category_display = config['category'] if config['category'] else "All"
+        st.info(f"**Category**: {category_display}")
+    
+    with col2:
+        eval_cluster_display = f"Cluster {config['eval_cluster']}" if config['eval_cluster'] else "None"
+        st.info(f"**Eval Cluster**: {eval_cluster_display}")
+    
+    with col3:
+        age_display = f"{config['min_age']}+ Only" if config['min_age'] else "All Ages"
+        st.info(f"**Age Filter**: {age_display}")
+
+def get_comparison_parameters(config):
     """Get comparison parameters"""
     st.subheader("🔧 Comparison Parameters")
     col1, col2, col3 = st.columns(3)
     
     with col1:
+        # Use DeltaE parameters from config if available
+        main_threshold = config['deltae_params'].get('main_delta_e_threshold', 3.0) if config.get('deltae_params') else 3.0
+        delta_e_threshold = st.slider(
+            "Main Color DeltaE Threshold",
+            min_value=1.0,
+            max_value=10.0,
+            value=main_threshold,
+            step=0.5,
+            help="Lower values = more similar main colors required"
+        )
+    
+    with col2:
+        reflect_threshold = config['deltae_params'].get('reflect_delta_e_threshold', 6.0) if config.get('deltae_params') else 6.0
+        reflect_delta_e_threshold = st.slider(
+            "Reflect Color DeltaE Threshold",
+            min_value=1.0,
+            max_value=15.0,
+            value=reflect_threshold,
+            step=0.5,
+            help="DeltaE threshold for reflect colors"
+        )
+    
+    with col3:
         top_n_compare = st.slider(
             "Top N regions per cluster to compare",
             min_value=5,
@@ -67,7 +99,9 @@ def get_comparison_parameters(delta_e_threshold):
             value=10
         )
     
-    with col2:
+    # Additional parameters
+    col1, col2 = st.columns(2)
+    with col1:
         max_pairs_display = st.slider(
             "Max similar pairs to display",
             min_value=3,
@@ -75,36 +109,36 @@ def get_comparison_parameters(delta_e_threshold):
             value=8
         )
     
-    with col3:
-        reflect_multiplier = st.slider(
-            "Reflect threshold multiplier",
-            min_value=1.0,
-            max_value=5.0,
-            value=2.0,
-            step=0.1,
-            help="Reflect threshold = Main threshold × this multiplier"
-        )
-    
-    # Calculate reflect threshold
-    reflect_threshold = delta_e_threshold * reflect_multiplier
-    st.info(f"🎯 **Thresholds**: Main Colors ≤ {delta_e_threshold:.1f}, Reflect Colors ≤ {reflect_threshold:.1f}")
+    with col2:
+        st.info(f"🎯 **Thresholds**: Main Colors ≤ {delta_e_threshold:.1f}, Reflect Colors ≤ {reflect_delta_e_threshold:.1f}")
     
     return {
         'delta_e_threshold': delta_e_threshold,
-        'reflect_threshold': reflect_threshold,
+        'reflect_threshold': reflect_delta_e_threshold,
         'top_n_compare': top_n_compare,
-        'max_pairs_display': max_pairs_display,
-        'reflect_multiplier': reflect_multiplier
+        'max_pairs_display': max_pairs_display
     }
 
-def perform_comparison(cluster_1, cluster_2, params, config):
-    """Perform the actual cluster comparison"""
+def perform_comparison(cluster_1, cluster_2, params, config, build_file_path_func):
+    """Perform the actual cluster comparison with dynamic file paths"""
     with st.spinner(f"Comparing clusters {cluster_1} and {cluster_2}..."):
         try:
-            # Load data for both clusters
+            # Load data for both clusters using dynamic file paths
             cluster_results = {}
             for cluster_id in [cluster_1, cluster_2]:
-                file_path = f"results/df_100_eval_{cluster_id}_min_100_minwomen_50.0_s1r_0.0.csv"
+                file_path = build_file_path_func(
+                    cluster_id,
+                    category=config['category'],
+                    eval_cluster=config['eval_cluster'],
+                    min_age=config['min_age']
+                )
+                
+                st.info(f"Loading data for cluster {cluster_id}: {file_path}")
+                
+                if not os.path.exists(file_path):
+                    st.error(f"❌ Color regions were not computed for cluster {cluster_id} with the selected parameters")
+                    st.error(f"File not found: {file_path}")
+                    return
                 
                 analysis_results = st.session_state.analyzer.analyze_color_regions(
                     file_path, 
@@ -118,6 +152,7 @@ def perform_comparison(cluster_1, cluster_2, params, config):
                     return
                     
                 cluster_results[cluster_id] = analysis_results
+                st.success(f"✅ Loaded cluster {cluster_id}")
             
             if len(cluster_results) != 2:
                 st.error("Failed to load data for both clusters!")
@@ -154,7 +189,6 @@ def store_comparison_results(comparison_results, cluster_1, cluster_2, cluster_r
     st.session_state.max_pairs_display = params['max_pairs_display']
     st.session_state.metric_column = config['metric_column']
     st.session_state.metric_description = config['metric_description']
-    st.session_state.reflect_multiplier = params['reflect_multiplier']
     st.session_state.reflect_threshold = params['reflect_threshold']
 
 def show_comparison_results():
